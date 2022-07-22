@@ -1,0 +1,197 @@
+---
+title: "Exam_ASML-Ex_C-Data1"
+output: pdf_document
+author: Mohamed ABID
+---
+
+```{r "clear all"}
+rm(list=ls())   # remove all variables
+graphics.off()  # clear all plots
+cat('\f')       # clear console
+```
+
+# DATA 1
+
+## Loading of libraries
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(Matrix)
+library(glmnet)
+```
+
+## Importation of the data
+
+```{r}
+set.seed(3333)
+D1 = read.csv('data1.csv', header=TRUE, sep=';')
+dim(D1)
+```
+
+```{r}
+head(D1)
+```
+
+```{r}
+str(D1)
+```
+
+### Convert the type of the qualitative variables
+
+```{r}
+D1$Psychologist = as.factor(D1$Psychologist)
+D1$Psychologist
+```
+
+```{r}
+D1$Treatment = as.factor(D1$Treatment)
+D1$Treatment
+```
+
+### Elimination of the column “Children”
+
+```{r}
+D1$Children = NULL
+```
+
+## Visualization of the data
+
+```{r}
+box.plot.Treatment = ggboxplot(D1, x="Treatment", y="Development"
+                               , bxp.errorbar = TRUE
+                               , palette = c('red', 'blue') , color = "Treatment")
+box.plot.Treatment + theme_bw() + theme(legend.position='None') + rremove("x.grid")
+```
+
+```{r}
+box.plot.Psychologist = ggboxplot(D1, x='Psychologist', y='Development' 
+                                  , bxp.errorbar = TRUE
+                                  , palette = c('darkred', 'darkblue') 
+                                  , color = 'Psychologist')
+box.plot.Psychologist + theme_bw() + theme(legend.position='None') + rremove("x.grid")
+```
+
+## Assumption
+
+```{r}
+L1.c = lm(Development ~ Treatment + Psychologist + Treatment * Psychologist
+          , data=D1)
+summary(L1.c)
+```
+
+```{r}
+plot(L1.c)
+```
+
+## ANOVA model
+
+### the complete model:
+
+```{r}
+anova(L1.c)
+```
+
+### Additive model:
+
+```{r}
+L1.a = lm(Development ~ Treatment + Psychologist, data=D1)
+anova(L1.a)
+```
+
+### Model with only the factor “Treatment”
+
+```{r}
+L1.Treatment = lm(Development ~ Treatment, data=D1)
+anova(L1.Treatment)
+```
+```{r}
+summary(L1.Treatment)
+```
+## Step by step strategies: backward strategy
+
+### Backward strategy with AIC criterion 
+
+```{r}
+# The linear model with all the explanatory variables and the cross effect
+L1.c
+```
+
+```{r}
+L1.B.AIC = step(L1.c, direction='backward')
+```
+
+```{r}
+L1.B.AIC
+```
+
+### backward strategy with Fisher criterion
+
+```{r}
+L1.B.Fisher = step(L1.c, direction='backward', test='F')
+```
+```{r}
+L1.B.Fisher
+```
+
+## Step by step strategies: forward strategy
+
+```{r}
+L1.1 = lm(D1$Development ~ 1, data=D1)
+```
+
+###  forward strategy with AIC criterion
+
+```{r}
+L1.F.AIC = step(L1.1, scope=list(L1.1, L1.c), direction='forward')
+```
+```{r}
+L1.F.AIC
+```
+
+### forward strategy with Fisher criterion
+
+```{r}
+L1.F.Fisher = step(L1.1, scope=list(L1.1, L1.c), direction='forward', test='F')
+```
+```{r}
+L1.F.Fisher
+```
+
+## Lasso method
+
+```{r}
+X1 = data.matrix(D1[, -3])
+Y1 = D1$Development
+D1.Lasso = glmnet(X1, Y1, alpha=1)
+plot(D1.Lasso, col=c(2, 4), label=TRUE)
+```
+```{r}
+D1.Lasso.cv = cv.glmnet(X1, Y1, alpha=1, nfolds=3)
+D1.Lasso.cv
+```
+
+```{r}
+D1.best.Lambd = D1.Lasso.cv$lambda.1se
+D1.best.Lambd
+```
+
+```{r}
+D1.best.Lasso = glmnet(X1, Y1, alpha=1, lambda=D1.best.Lambd)
+coefficients(D1.best.Lasso)
+```
+
+## Conclusion
+
+```{r}
+L1.best = lm(Development ~ Treatment, data=D1)
+L1.best
+```
+```{r}
+summary(L1.best)
+```
+
+
+
+
+

@@ -1,0 +1,488 @@
+---
+title: "Exam_ASML-Ex_C-Data2"
+output: pdf_document
+author: Mohamed ABID
+---
+
+```{r "clear all"}
+rm(list=ls())   # remove all variables
+graphics.off()  # clear all plots
+cat('\f')       # clear console
+```
+
+# DATA 2
+
+## Loading of libraries
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+library(MASS)
+library(leaps)
+library(Matrix)
+library(glmnet)
+library(dplyr)
+library(VSURF)
+```
+
+## Importation of the data
+
+```{r}
+set.seed(3333)
+D2 = read.csv('data2.csv', header=TRUE, sep=';')
+dim(D2)
+```
+```{r}
+head(D2)
+```
+```{r}
+str(D2)
+```
+
+## Preparation of the data
+
+### Elimination of the column “Product”
+
+```{r}
+D2$Product = NULL
+```
+
+## Visualization of the data
+
+### Scatter plot:
+
+```{r}
+scatter.color = c(2,4,6,1)
+for (i in 1:4) {
+  print(ggscatter(D2, x=names(D2)[i] , y='Grade' 
+                  , col=scatter.color[i], shape=14+i, size=1.5) + theme_bw())
+}
+```
+
+### pairs plot
+
+```{r}
+# Correlation panel
+panel.cor <- function (x, y) {
+  usr = par('usr'); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  r = round(cor(x, y), digits=2)
+  txt = paste0('', r)
+  cex.cor = 0.6 / strwidth(txt)
+  text(0.5, 0.5, txt, cex=abs(cex.cor*r), col=c('darkred', 'darkblue')[floor(r)+2])
+}
+# Customize upper panel
+panel.plot <- function (x, y) {
+  points(x, y, pch=18, col=6) 
+}
+# Create the plots
+pairs(D2, lower.panel=panel.cor, upper.panel=panel.plot)
+```
+
+## Assumption
+
+```{r}
+L2.c = lm(Grade ~ ., data=D2)
+summary(L2.c)
+```
+```{r}
+plot(L2.c)
+```
+
+### Kolmogorov test
+
+```{r}
+# Kolmogorov-Smirnov test
+sres = rstandard(L2.c)
+ks.test(sres, 'pnorm')
+```
+
+### "Box-Cox" transformation
+
+```{r}
+# Application of the function "boxcox":
+bc = boxcox(Grade ~ ., data=D2)
+```
+```{r}
+# Saving of the best lambda:
+Lambda = bc$x[which.max(bc$y)]
+Lambda
+```
+```{r}
+# Transformation of the response variable:
+D2.t = D2[,1:4]
+D2.t$Grade.t = (D2$Grad^Lambda - 1) / Lambda
+# Creation of the model
+new.L2.c = lm(Grade.t ~ ., data=D2.t)
+summary(new.L2.c)
+```
+
+### Kolmogorov-Smirnov test
+
+```{r}
+# Kolmogorov-Smirnov test
+sres2 = rstandard(new.L2.c)
+ks.test(sres2, 'pnorm')
+```
+
+## Adjusted R-squared
+
+```{r}
+L2.AR2 = leaps(D2.t[,-5], D2.t$Grade.t, method='adjr2', nbest=1)
+L2.AR2
+```
+```{r}
+id.max.adjr2 = which(L2.AR2$adjr2==max(L2.AR2$adjr2))
+L2.AR2.Coeff = L2.AR2$which[id.max.adjr2,]
+L2.AR2.Coeff
+```
+```{r}
+names(D2.t[,-5])[which(L2.AR2.Coeff==TRUE)]
+```
+
+## Backward-AIC
+
+```{r}
+L2.B.AIC = step(new.L2.c, direction='backward')
+```
+```{r}
+L2.B.AIC
+```
+
+##  Backward-Fisher
+
+```{r}
+L2.B.Fisher = step(new.L2.c, direction='backward', test='F')
+```
+```{r}
+L2.B.Fisher
+```
+
+## forward-AIC
+
+```{r}
+new.L2.1 = lm(D2.t$Grade ~ 1, data=D2.t)
+L2.F.AIC = step(new.L2.1, scope=list(new.L2.1, new.L2.c), direction='forward')
+```
+
+##  forward-Fisher
+
+```{r}
+L2.F.Fisher = step(new.L2.1, scope=list(new.L2.1, new.L2.c)
+                   , direction='forward', test='F')
+```
+
+## LASSO
+
+```{r}
+X2 = data.matrix(D2.t[,-5])
+Y2 = D2.t$Grade
+D2.Lasso = glmnet(X2, Y2, alpha=1)
+plot(D2.Lasso, col=c(2,4,6,8), label=TRUE)
+```
+```{r}
+# Cross validation error
+D2.Lasso.cv = cv.glmnet(X2, Y2, alpha=1, nfolds=3)
+D2.Lasso.cv
+```
+```{r}
+plot(D2.Lasso.cv$lambda, D2.Lasso.cv$cvm, type='l', col=4)
+```
+```{r}
+# Saving the best lambda from "1se" row:
+D2.best.Lambd = D2.Lasso.cv$lambda.1se
+# Selection of the variables associated with the best lambda:
+D2.best.Lasso = glmnet(X2, Y2, alpha=1, lambda=D2.best.Lambd)
+coefficients(D2.best.Lasso)
+```
+
+## Computation of the testing error with Bagging
+
+### Computation of the testing error
+
+```{r}
+# Initialization
+n.row = dim(D2.t)[1]
+n.col = dim(D2.t)[2]
+n.learn = floor(2 * n.row / 3) 
+u = 1 : n.row
+k = 100
+
+df.best.L2b = data.frame()
+df.error = data.frame(ind=integer(), Procedure=character(), Error=double())
+
+for (i in 1:k){
+  #---- Splitting the dataset into learning and testing datasets ---------------
+  l = sample(u, n.learn, replace=FALSE)
+  D.learn = D2.t[l,]
+  D.test = D2.t[-l,]
+  X.learn = D.learn[, -5]
+  X.learn = data.matrix(X.learn)
+  df.X.learn = as.data.frame(X.learn)
+  Y.learn = D.learn$Grade.t
+  X.test = D.test[, -5]
+  Y.test = D.test$Grade.t
+  
+  #----- Creation of the model with all the explanatory variables --------------
+  L2b.split.c = lm(Grade.t ~ ., data=D.learn)
+  
+  #----- Creation of the model with only the intercept -------------------------
+  L2b.split.1 = lm(Grade.t ~ 1, data=D.learn)
+  
+  #============================================================================#
+  #                      ----- Adjusted R squared -----                        #
+  #============================================================================#
+  cat(' \n ##### Adjusted R squared ############################## ', i, ' # \n')
+  
+  #----- Variables selection ---------------------------------------------------
+  D2b.best.AdjR2 = leaps(df.X.learn, Y.learn, method='adjr2', nbest=1)
+  # Selection of the index of the biggest adjusted R squared:
+  id.max.adjr2 = which(D2b.best.AdjR2$adjr2==max(D2b.best.AdjR2$adjr2))
+  # Selection of the variables:
+  Coef.D2b.best.AdjR2 = D2b.best.AdjR2$which[id.max.adjr2,]
+  # Storing the names of the selected variables:
+  nm.Coef.best.AdjR2 = names(df.X.learn)[which(Coef.D2b.best.AdjR2==TRUE)]
+  
+  #----- Creation of the model with the selected variables ---------------------
+  # Concatenating the names of the variables in a string:
+  formula.Coef.best.AdjR2 = paste(nm.Coef.best.AdjR2, collapse = '+')
+  # Storing the formula of the model in a string:
+  str.L2b.AdjR2 = sprintf('Grade.t ~ %s', formula.Coef.best.AdjR2)
+  # Computing the model with the selected variables:
+  best.L2b.AdjR2 = do.call('lm', list(str.L2b.AdjR2, quote(D.learn)))
+  
+  #----- Prediction ------------------------------------------------------------
+  Y.prdc.AdjR2 = predict(best.L2b.AdjR2, newdata=D.test)
+  
+  #----- Computation of the error ----------------------------------------------
+  err.AdjR2 = (1 / nrow(X.test)) * sum((Y.test - Y.prdc.AdjR2)^2)
+  # Storing the error in a data frame:
+  df.err.AdjR2 = data.frame(ind=i, Procedure='AdjR2', Error=err.AdjR2)
+  df.error = bind_rows(df.error, df.err.AdjR2)
+  
+  #----- Saving the coefficients of the best model -----------------------------
+  Coef.best.L2b.AdjR2 = best.L2b.AdjR2$coefficients
+  # Storing the coefficients in a data frame:
+  df.Coef.AdjR2 = data.frame(as.list(Coef.best.L2b.AdjR2))
+  df.Coef.AdjR2 = data.frame(id=i, Procedure='AdjR2', df.Coef.AdjR2)
+  df.best.L2b = bind_rows(df.best.L2b, df.Coef.AdjR2)
+  
+  #----- Deletion of the intermediate variables --------------------------------
+  rm(D2b.best.AdjR2, id.max.adjr2, Coef.D2b.best.AdjR2, nm.Coef.best.AdjR2
+     , formula.Coef.best.AdjR2, str.L2b.AdjR2, best.L2b.AdjR2, Y.prdc.AdjR2
+     , err.AdjR2, df.err.AdjR2, Coef.best.L2b.AdjR2, df.Coef.AdjR2)
+  
+  #============================================================================#
+  #         ----- Step by step "Backward" method with AIC test -----           #
+  #============================================================================#
+  cat(' \n ##### Backward - AIC ################################## ', i, ' # \n')
+  
+  #----- Variables selection ---------------------------------------------------
+  L2b.Back.AIC = step(L2b.split.c, direction='backward')
+  # formula of the model with the selected variables:
+  L2b.Back.AIC.formula = L2b.Back.AIC$call$formula
+  
+  #----- Creation of the model with the selected variables ---------------------
+  best.L2b.Back.AIC = lm(L2b.Back.AIC.formula, data=D.learn)
+  
+  #----- Prediction ------------------------------------------------------------
+  Y.prdc.Back.AIC = predict(best.L2b.Back.AIC, newdata=X.test)
+  
+  #----- Computation of the error ----------------------------------------------
+  err.Back.AIC = (1 / nrow(X.test)) * sum((Y.test - Y.prdc.Back.AIC)^2)
+  # Storing the error in a data frame:
+  df.err.Back.AIC = data.frame(ind=i, Procedure='Backword AIC', Error=err.Back.AIC)
+  df.error = bind_rows(df.error, df.err.Back.AIC)
+  
+  #----- Saving the coefficients of the best model -----------------------------
+  Coef.best.L2b.Back.AIC = best.L2b.Back.AIC$coefficients
+  # Storing the coefficients in a data frame:
+  df.Coef.Back.AIC = data.frame(as.list(Coef.best.L2b.Back.AIC))
+  df.Coef.Back.AIC = data.frame(id=i, Procedure='Backword AIC', df.Coef.Back.AIC)
+  df.best.L2b = bind_rows(df.best.L2b, df.Coef.Back.AIC)
+  
+  #----- Deletion of the intermediate variables --------------------------------
+  rm(L2b.Back.AIC, L2b.Back.AIC.formula, best.L2b.Back.AIC, Y.prdc.Back.AIC
+     , err.Back.AIC, df.err.Back.AIC, Coef.best.L2b.Back.AIC, df.Coef.Back.AIC)
+  
+  #============================================================================#
+  #         ----- Step by step "Forward" method with AIC test -----            #
+  #============================================================================#
+  cat(' \n ##### Forward - AIC ################################## ', i, ' # \n')
+  
+  #----- Variables selection ---------------------------------------------------
+  L2b.Forw.AIC = step(L2b.split.c, scope=list(L2b.split.1, L2b.split.c)
+  , direction='forward')
+  L2b.Forw.AIC.formula = L2b.Forw.AIC$call$formula
+  
+  #----- Creation of the model with the selected variables ---------------------
+  best.L2b.Forw.AIC = lm(L2b.Forw.AIC.formula, data=D.learn)
+  
+  #----- Prediction ------------------------------------------------------------
+  Y.prdc.Forw.AIC = predict(best.L2b.Forw.AIC, newdata=D.test)
+  
+  #----- Computation of the error ----------------------------------------------
+  err.Forw.AIC = (1 / nrow(X.test)) * sum((Y.test - Y.prdc.Forw.AIC)^2)
+  # Storing the error in a data frame:
+  df.err.Forw.AIC = data.frame(ind=i, Procedure='Forward AIC', Error=err.Forw.AIC)
+  df.error = bind_rows(df.error, df.err.Forw.AIC)
+  
+  #----- Saving the coefficients of the best model -----------------------------
+  Coef.best.L2b.Forw.AIC = best.L2b.Forw.AIC$coefficients
+  # Storing the coefficients in a data frame:
+  df.Coef.Forw.AIC = data.frame(as.list(Coef.best.L2b.Forw.AIC))
+  df.Coef.Forw.AIC = data.frame(id=i, Procedure='Forward AIC', df.Coef.Forw.AIC)
+  df.best.L2b = bind_rows(df.best.L2b, df.Coef.Forw.AIC)
+  
+  #----- Deletion of the intermediate variables --------------------------------
+  rm(L2b.Forw.AIC, L2b.Forw.AIC.formula, best.L2b.Forw.AIC, Y.prdc.Forw.AIC
+     , err.Forw.AIC, df.err.Forw.AIC, Coef.best.L2b.Forw.AIC, df.Coef.Forw.AIC)
+  
+  #============================================================================#
+  #                              ----- LASSO -----                             #
+  #============================================================================#
+  cat(' \n ##### LASSO ########################################### ', i, ' # \n')
+  
+  #----- Variables selection ---------------------------------------------------
+  # Computing of the cross validation error
+  D2b.Lasso.cv = cv.glmnet(X.learn, Y.learn, alpha=1, nfolds=3)
+  # Storing the best lambda from "1se" row:
+  D2b.best.Lambd = D2b.Lasso.cv$lambda.1se
+  # Selection of variables:
+  D2b.best.Lasso = glmnet(X.learn, Y.learn, alpha=1, lambda=D2b.best.Lambd)
+  Coef.D2b.best.Lasso = coefficients(D2b.best.Lasso)
+  # Selecting the names of variables whose coefficients are not null:
+  nm.Coef.best.Lasso = names(which(Coef.D2b.best.Lasso[,1]!=0))
+  # Rename the "(Intercept)" as "1":
+  nm.Coef.best.Lasso[1] = '1'
+  
+  #----- Creation of the model with the selected variables ---------------------
+  # Concatenating the names of the variables in a string:
+  formula.Coef.best.Lasso = paste(nm.Coef.best.Lasso, collapse = '+')
+  # Storing the formula of the model in a string:
+  str.L2b.Lasso = sprintf('Grade.t ~ %s', formula.Coef.best.Lasso)
+  # Computing the model with the selected variables:
+  best.L2b.Lasso = do.call('lm', list(str.L2b.Lasso, quote(D.learn)))
+  
+  #----- Prediction ------------------------------------------------------------
+  Y.prdc.Lasso = predict(best.L2b.Lasso, newdata=D.test)
+  
+  #----- Computation of the error ----------------------------------------------
+  err.Lasso = (1 / nrow(X.test)) * sum((Y.test - Y.prdc.Lasso)^2)
+  # Storing the error in a data frame:
+  df.err.Lasso = data.frame(ind=i, Procedure='LASSO', Error=err.Lasso)
+  df.error = bind_rows(df.error, df.err.Lasso)
+  
+  #----- Saving the coefficients of the best model -----------------------------
+  Coef.best.L2b.Lasso = best.L2b.Lasso$coefficients
+  # Storing the coefficients in a data frame:
+  df.Coef.Lasso = data.frame(as.list(Coef.best.L2b.Lasso))
+  df.Coef.Lasso = data.frame(id=i, Procedure='LASSO', df.Coef.Lasso)
+  df.best.L2b = bind_rows(df.best.L2b, df.Coef.Lasso)
+  
+  #----- Deletion of the intermediate variables --------------------------------
+  rm(D2b.Lasso.cv, D2b.best.Lambd, D2b.best.Lasso, Coef.D2b.best.Lasso
+     , nm.Coef.best.Lasso, formula.Coef.best.Lasso, str.L2b.Lasso, best.L2b.Lasso
+     , Y.prdc.Lasso, err.Lasso, df.err.Lasso, Coef.best.L2b.Lasso, df.Coef.Lasso)
+  #============================================================================#
+  #         ----- VSURF: Variable Selection Using Random Forests -----         #
+  #============================================================================#
+  cat(' \n ##### VSURF ########################################### ', i, ' # \n')
+  
+  #----- Variables selection ---------------------------------------------------
+  Var.Selec.VSURF = VSURF(df.X.learn, Y.learn)
+  # Storing the names of the selected variables:
+  nm.Coef.VSURF = colnames(df.X.learn[Var.Selec.VSURF$varselect.pred])
+  
+  #----- Creation of the model with the selected variables ---------------------
+  # Add the "Intercept" to the names of the selected variables:
+  nm.Coef.VSURF = c('1', nm.Coef.VSURF)
+  # Concatenating the names of the variables in a string:
+  formula.Coef.best.VSURF = paste(nm.Coef.VSURF, collapse = '+')
+  # Storing the formula of the model in a string:
+  str.L2b.VSURF = sprintf('Grade.t ~ %s', formula.Coef.best.VSURF)
+  # Computing the model with the selected variables:
+  best.L2b.VSURF = do.call('lm', list(str.L2b.VSURF, quote(D.learn)))
+  
+  #----- Prediction ------------------------------------------------------------
+  Y.prdc.VSURF = predict(best.L2b.VSURF, newdata=D.test)
+  
+  #----- Computation of the error ----------------------------------------------
+  err.VSURF = (1 / nrow(X.test)) * sum((Y.test - Y.prdc.VSURF)^2)
+  # Storing the error in a data frame:
+  df.err.VSURF = data.frame(ind=i, Procedure='VSURF', Error=err.VSURF)
+  df.error = bind_rows(df.error, df.err.VSURF)
+  
+  #----- Saving the coefficients of the best model -----------------------------
+  Coef.best.L2b.VSURF = best.L2b.VSURF$coefficients
+  # Storing the coefficients in a data frame:
+  df.Coef.VSURF = data.frame(as.list(Coef.best.L2b.VSURF))
+  df.Coef.VSURF = data.frame(id=i, Procedure='VSURF', df.Coef.VSURF)
+  df.best.L2b = bind_rows(df.best.L2b, df.Coef.VSURF)
+  
+  #----- Deletion of the intermediate variables --------------------------------
+  rm(Var.Selec.VSURF, nm.Coef.VSURF, formula.Coef.best.VSURF, str.L2b.VSURF
+     , best.L2b.VSURF, Y.prdc.VSURF, err.VSURF, df.err.VSURF, Coef.best.L2b.VSURF
+     , df.Coef.VSURF)
+  }
+```
+
+### Average of the test errors
+
+```{r}
+# Initialization of the labels of the means:
+label.mean = function(x) {
+  data.frame(y = (mean(x) + max(x)) / 2 
+             , label = paste('Mean =', round(mean(x), digit=2)))
+}
+# Plotting the box plots:
+plot.Error = ggboxplot(df.error, x = 'Procedure', y = 'Error'
+                       , bxp.errorbar = TRUE
+                       , palette = c(2:6) , color = 'Procedure')
+
+plot.Error + theme_bw() + theme(legend.position = 'None') + rremove('x.grid') +
+  stat_summary(fun.data=label.mean, geo='text', size=3.5) +
+  stat_summary(fun=mean, shape=18, size=0.6)
+```
+```{r}
+# Extraction of the mean for each procedure:
+list.mean.error = df.error %>%
+  group_by(Procedure) %>%
+  summarise(mean_error=mean(Error))
+list.mean.error
+```
+
+### Creation of the model
+
+```{r}
+# Storing the index of the smallest mean:
+id.min.error = which.min(as.data.frame(list.mean.error)[,2])
+id.min.error
+```
+```{r}
+# Replacement of the "NA" values by 0 in the data frame "df.best.L2b":
+df.best.L2b[is.na(df.best.L2b)] = 0
+
+# Computation of the mean of each coefficient:
+list.mean.coeff = df.best.L2b %>%
+  group_by(Procedure) %>%
+  summarise(Intercept=mean(X.Intercept.)
+            , Sugar=mean(Sugar)
+            , Acid=mean(Acid)
+            , Bitter=mean(Bitter)
+            , Pulpy=mean(Pulpy))
+
+# The best model
+best.model = list.mean.coeff[id.min.error,]
+best.model
+```
+
+
+
+
+
+
+
+
+
+
